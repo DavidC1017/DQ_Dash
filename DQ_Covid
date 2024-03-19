@@ -1,0 +1,214 @@
+
+
+WbVarDef fName = 'C:\Users\dchung\Desktop\Work\DQ\2024\031824\031824_COVID.xlsx'; 
+WbExport -type=xlsx
+				 -file='$[fName]'
+				 -title='COVID'
+         -delimiter=','
+         -dateFormat='yyyy-MM-dd';
+
+
+---------------------------------------
+-------------------------------------------------
+------------------------------------------
+--covid
+
+Select p.ASSIGNEE, p.PROVIDER_PIN, p.provider_name, p.prac_type, p.family, 
+COVID_REPORTED_GUI, -- time frame DC
+COVID_REPORTED_HL7, -- time frame DC
+COVID_REPORTED_ROSTER, --time frame DC
+COVID_REPORTED_ROSTER_HISTORICAL,--leave alone DC
+COVID_UNSPECIFIED, --leave alone DC
+COVID_COUNT_SAME_PAT_SAME_DAY, 
+COVID_count_less_24_8_days, COVID_count_more_24_8_days, 
+round((COVID_count_more_24_8_days/(nullif((COVID_count_more_24_8_days+COVID_count_less_24_8_days),0)))*100,2) as COVID_Pct_Slow,
+
+(CASE WHEN ((NVL(COVID_REPORTED_GUI,0)+NVL(COVID_REPORTED_HL7,0)+NVL(COVID_REPORTED_ROSTER,0)-NVL(Historical_count,0)) > 0 
+          and (Select count(*) from provider_inventory pi where pi.provider_uuid = p.provider_id and vaccine_product_id in (select vaccine_product_id from ref_vaccine_product where vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('308','309','310','311','312','313','207','208','213','212','217','218','219','228')))) = 0)
+          then 'Reported without Inventory'
+     WHEN((NVL(COVID_REPORTED_GUI,0)+NVL(COVID_REPORTED_HL7,0)+NVL(COVID_REPORTED_ROSTER,0)-NVL(Historical_count,0)) = 0 
+          and (Select count(*) from provider_inventory pi where pi.provider_uuid = p.provider_id and vaccine_product_id in (select vaccine_product_id from ref_vaccine_product where vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('308','309','310','311','312','313','207','208','213','212','217','218','219','228')))) = 0)
+          then 'Never reported No Inventory'
+    WHEN((NVL(COVID_REPORTED_GUI,0)+NVL(COVID_REPORTED_HL7,0)+NVL(COVID_REPORTED_ROSTER,0)-NVL(Historical_count,0)) > 0 
+          and (Select count(*) from provider_inventory pi where pi.provider_uuid = p.provider_id and vaccine_product_id in (select vaccine_product_id from ref_vaccine_product where vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('308','309','310','311','312','313','207','208','213','212','217','218','219','228')))) > 0)
+          then 'Reported with Inventory'
+    else null end) as COVID_Reported_Doses_with_Inventory,
+    COVID_NOT_DEDUCTED_FROM_INV,
+    COVID_NON_US_ADMIN,
+    COVID_NON_US_HISTORICAL,
+    BEFORE_2020_COVID_SHOTS_ADMIN,
+	BEFORE_2020_COVID_SHOTS_ADMIN_HIST,
+	OUT_OF_COMMISSION_COVID_CVX_CODES_8_days,
+	OUT_OF_COMMISSION_COVID_CVX_CODES_TOTAL
+ 
+    
+    
+from        
+(select ext.assignee as ASSIGNEE, uuid as PROVIDER_ID, provider_name, vacman_pin PROVIDER_PIN, 
+(Select description from ref_code where id = provider_practice_type_id) AS prac_type, 
+ ext.ext_group as family from provider p
+ left join External_Groups ext on p.uuid = ext.provider_id
+ WHERE provider_status_type_id='2101'
+--try running without where clause to include non covid vaccines and compare ---
+
+--where uuid in (select SHOT_DATA_ENTERED_ORG_ID from patient_immunization where vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('207','208','212','213','217','218','219','228','229','300')) and SHOT_ADMINISTERED_DATE > '13-DEC-2020')
+)p
+
+left join (
+			select SHOT_DATA_ENTERED_ORG_ID,
+            NVL(COUNT(case when pi.DATA_SOURCE_TYPE_ID = 3901 then 1 end),0) as COVID_REPORTED_GUI,
+            NVL(COUNT(case when pi.DATA_SOURCE_TYPE_ID = 3902 then 1 end),0) as COVID_REPORTED_HL7,   
+            NVL(COUNT(case when pi.DATA_SOURCE_TYPE_ID = 3907 then 1 end),0) as COVID_REPORTED_ROSTER,
+            NVL(COUNT(case when vaccine_id = (Select id from ref_vaccine_code where CVX_CODE = '213') and is_historical = 0 then 1 end),0) as COVID_UNSPECIFIED,
+            
+            NVL(COUNT(case when (pi.shot_administered_date < add_months(trunc(p.birth_date), 12*1)) then 1 end),0) as UNDER1_COUNT,
+            
+            NVL(COUNT(case when (pi.shot_administered_date >= add_months(trunc(p.birth_date),12)) and (pi.shot_administered_date < add_months(trunc(p.birth_date), 12*5)) then 1 end),0) as BETWEEN_1_5, 
+             NVL(COUNT(case when (pi.vaccine_id <> (Select id from ref_vaccine_code where CVX_CODE = 218) and pi.shot_administered_date >= add_months(trunc(p.birth_date),12*5)) and (pi.shot_administered_date < add_months(trunc(p.birth_date), 12*12)) then 1 end),0) as BTWN_5_11_NOT_218,   
+            
+            NVL(COUNT(case when pi.is_historical = 0 and (pi.shot_administered_date >= add_months(trunc(p.birth_date), 12*12)) and (pi.shot_administered_date < add_months(trunc(p.birth_date), 12*18)) and vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('207','212','213','217','218')) then 1 end),0) as BETWEEN_12_18_MOD_JJ_UNSP,
+            NVL(COUNT(case when is_historical = 1 then 1 end),0) as Historical_count,
+            NVL(COUNT( case when round((pi.shot_reported_date - pi.shot_administered_date),2) <= 2.00 and pi.is_historical = 0 and pi.shot_administered_date >= (trunc(sysdate-8)) then 1 end),0) as COVID_count_less_24_8_days,
+            NVL(COUNT(case when round((pi.shot_reported_date - pi.shot_administered_date),2) > 2.00 and pi.is_historical = 0 and pi.shot_administered_date >= (trunc(sysdate-8)) then 1 end),0) as COVID_count_more_24_8_days,
+            NVL(COUNT(case when round((pi.shot_reported_date - pi.shot_administered_date),2) > 4.00 and pi.is_historical = 0 and pi.shot_administered_date >= (trunc(sysdate-8)) then 1 end),0) as COVID_count_more_72_8_days,
+            NVL(COUNT(case when (p.gender_type_id = 803 OR p.gender_type_id IS NULL) and is_historical = 0 then 1 end),0) as gender_unk,
+            NVL(COUNT(case when (IS_SHOT_DED_FROM_INVENTORY = 0 or IS_SHOT_DED_FROM_INVENTORY is null) and is_historical = 0 and vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('308','309','310','311','312','313','207','208','212','217','218','219','228','229','230','300','301','302')) then 1 end),0) as COVID_NOT_DEDUCTED_FROM_INV,
+            NVL(COUNT(case when pi.DATA_SOURCE_TYPE_ID = 3907 and pi.is_historical = 1 then 1 end),0) as COVID_REPORTED_ROSTER_HISTORICAL
+          	from patient_immunization pi
+            join patient p on p.uuid = pi.patient_uuid
+            where vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('308','309','310','311','312','313','207','208','213','212','217','218','219')) and SHOT_ADMINISTERED_DATE >= '01-JUL-2023' AND is_shot_valid=1
+            group by SHOT_DATA_ENTERED_ORG_ID
+            
+            )covid_reported on covid_reported.SHOT_DATA_ENTERED_ORG_ID = p.PROVIDER_ID
+--
+left join (
+			Select SHOT_DATA_ENTERED_ORG_ID, count(*) COVID_COUNT_SAME_PAT_SAME_DAY from
+            (select patient_uuid,SHOT_DATA_ENTERED_ORG_ID, shot_administered_date,  count(uuid) ct from patient_immunization pi
+            where 
+             pi.vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('308','309','310','311','312','313','207','208','212','217','218','219','228','229','230','300','301','302'))
+            and pi.SHOT_ADMINISTERED_DATE >= '01-JUL-2023' AND pi.is_shot_valid=1
+            group by patient_uuid, SHOT_DATA_ENTERED_ORG_ID, shot_administered_date
+            )BY_PAT where ct > 1
+            group by SHOT_DATA_ENTERED_ORG_ID
+            ) SAME_DAY on SAME_DAY.SHOT_DATA_ENTERED_ORG_ID = p.PROVIDER_ID
+ --           
+        
+left join (select distinct pi.shot_data_entered_org_id, total_patient.ct as total_patient_count, other_race.ct as other_race_count
+            from patient_immunization pi,
+                (Select provider_uuid, count(*) as ct from provider_patient_map where patient_uuid in (select patient_uuid from PATIENT_RACE where race_type_id = 1006) group by provider_uuid) other_race,
+                (Select provider_uuid, count(*) as ct from provider_patient_map group by provider_uuid) total_patient
+                 where total_patient.provider_uuid = pi.shot_data_entered_org_id
+                and other_race.provider_uuid = pi.shot_data_entered_org_id
+                and pi.shot_administered_date >= '01-JAN-2022'
+                and total_patient.ct > 1000 --filter for only proivders with > 1000 patients (not very useful if they have a few patients)
+                and pi.is_historical = 0) race on race.shot_data_entered_org_id = p.provider_id
+                
+left join (Select SHOT_DATA_ENTERED_ORG_ID, 
+  NVL(COUNT(case when pi.IS_HISTORICAL = 0 then 1 end),0) as COVID_NON_US_ADMIN,
+  NVL(COUNT(case when pi.IS_HISTORICAL = 1 then 1 end),0) as COVID_NON_US_HISTORICAL
+  from patient_immunization pi
+  where vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('210','510','511','211')) 
+  GROUP BY SHOT_DATA_ENTERED_ORG_ID
+  )NON_US on NON_US.SHOT_DATA_ENTERED_ORG_ID = p.PROVIDER_ID
+  
+left join (select distinct pi.shot_data_entered_org_id, total_patient2.ct as total_patient_count2, unk_race.ct as unk_race_count
+            from patient_immunization pi,
+                (Select provider_uuid, count(*) as ct from provider_patient_map where patient_uuid in (select patient_uuid from PATIENT_RACE where race_type_id = 1007) group by provider_uuid) unk_race,
+                (Select provider_uuid, count(*) as ct from provider_patient_map group by provider_uuid) total_patient2
+                where total_patient2.provider_uuid = pi.shot_data_entered_org_id
+                and unk_race.provider_uuid = pi.shot_data_entered_org_id
+                and pi.shot_administered_date >= '01-JAN-2022'
+                and total_patient2.ct > 1000 --filter for only proivders with > 1000 patients (not very useful if they have a few patients)
+                and pi.is_historical = 0 AND pi.is_shot_valid=1) race1 on race1.shot_data_entered_org_id = p.provider_id
+                
+left join (select hifml.provider_uuid, sum(hifml.total_rec_count) as HL7_REC_1W, sum(hifml.rejected_rec_count) as HL7_FAILED_1W, round((sum(hifml.rejected_rec_count)/sum(hifml.total_rec_count)),2) as HL7_ERROR_PCT_1W
+from hl7_vxu_interface_feed_log hifml
+where TRUNC(hifml.run_start_time) between TRUNC(SYSDATE-8) and TRUNC(SYSDATE-1)
+--and interface_id = '4506'
+group by hifml.provider_uuid) HL7 on HL7.provider_uuid = p.provider_id
+
+left join (select provider_uuid,
+    count(*) as DS_NO
+    FROM  hl7_vxu_interface_feed_log ml
+    WHERE
+    ml.intermediate_xml like '%dataSharingStatus="Y"%'
+    and run_start_time_utc > TRUNC(sysdate-30) + 1/6 group by provider_uuid)DS on DS.provider_uuid = p.provider_id
+--order by provider_pin
+----------------------------------------------------------------------
+--david edit
+--Bivalent under 6 month
+LEFT JOIN (SELECT shot_data_entered_org_id,count(*) AS BIVALENT_UNDER_6_MONTHS
+FROM patient p
+LEFT JOIN patient_immunization pi
+ON p.uuid=pi.patient_uuid
+LEFT JOIN ref_vaccine_code rvc
+ON pi.vaccine_id=rvc.id
+WHERE birth_date between add_months(shot_administered_date,-6) AND shot_administered_date AND description LIKE '%COVID%' AND description LIKE '%Bivalent%' AND pi.is_shot_valid=1
+GROUP BY shot_data_entered_org_id
+)bivalent_under_six_months ON bivalent_under_six_months.shot_data_entered_org_id=p.provider_id
+
+--Covid shot before 2020
+left join (SELECT shot_data_entered_org_id,count(*) AS BEFORE_2020_COVID_SHOTS_ADMIN
+FROM patient p
+left join patient_immunization pi
+on p.uuid=pi.patient_uuid
+left join ref_vaccine_code rvc 
+on pi.vaccine_id=rvc.id
+WHERE description LIKE 'COVID%' AND to_char(shot_administered_date,'yyyy-mm-dd')<'2020-12-01' AND is_historical=0 AND pi.is_shot_valid=1
+GROUP BY shot_data_entered_org_id
+)shot_before_2020  ON shot_before_2020.shot_data_entered_org_id=p.provider_id
+
+--Covid shot before 2020 historical
+left join (SELECT shot_data_entered_org_id,count(*) AS BEFORE_2020_COVID_SHOTS_ADMIN_HIST
+FROM patient p
+left join patient_immunization pi
+on p.uuid=pi.patient_uuid
+left join ref_vaccine_code rvc 
+on pi.vaccine_id=rvc.id
+WHERE description LIKE 'COVID%' AND to_char(shot_administered_date,'yyyy-mm-dd')<'2020-12-01' AND is_historical=1 AND pi.is_shot_valid=1
+GROUP BY shot_data_entered_org_id
+)shot_before_2020_historical  ON shot_before_2020_historical.shot_data_entered_org_id=p.provider_id
+
+
+----DOB same as shot_admin_date except HEPb and Immunoglobulins
+LEFT JOIN(
+--SELECT description,patient_id,to_char(birth_date,'YYYY-MM-DD') AS birth_date,to_char(pi.shot_administered_date,'YYYY-MM-DD') AS shot_date,pi.vaccine_id,rvc.description,pr.vacman_pin,pr.provider_name
+SELECT shot_data_entered_org_id,count(*) AS SHOT_ADMIN_DATE_ON_DOB
+FROM patient p
+left join patient_immunization pi
+on p.uuid=pi.patient_uuid
+left join ref_vaccine_code rvc 
+on pi.vaccine_id=rvc.id
+left join provider pr
+on pi.shot_data_entered_org_id =pr.uuid
+WHERE birth_date=shot_administered_date AND rvc.code NOT IN ('08','45','19','02','14','13','86','87','157','156','29','30','34','71','13','36') and pi.is_historical=0 AND pi.is_shot_valid=1
+GROUP BY shot_data_entered_org_id
+)shots_on_dob ON shots_on_dob.shot_data_entered_org_id=p.provider_id
+
+--Covid out of commission CVX codes
+left join (SELECT shot_data_entered_org_id, count(*) AS OUT_OF_COMMISSION_COVID_CVX_CODES_8_days
+FROM patient p
+JOIN patient_immunization pi
+ON p.uuid=pi.patient_uuid
+JOIN provider pr
+ON pi.shot_data_entered_org_id=pr.uuid
+JOIN ref_vaccine_code rvc
+ON pi.vaccine_id=rvc.id
+WHERE cvx_code IN (207,208,211,212,213,217,221,229,230,300,301,302,520) AND shot_administered_date between trunc(sysdate-8) AND trunc(sysdate) AND pi.is_historical=0 AND pi.is_shot_valid=1
+GROUP BY shot_data_entered_org_id
+)out_of_commission_covid ON out_of_commission_covid.shot_data_entered_org_id=p.provider_id
+--covid out of commission cumulative
+left join (SELECT shot_data_entered_org_id, count(*) AS OUT_OF_COMMISSION_COVID_CVX_CODES_TOTAL
+FROM patient p
+JOIN patient_immunization pi
+ON p.uuid=pi.patient_uuid
+JOIN provider pr
+ON pi.shot_data_entered_org_id=pr.uuid
+JOIN ref_vaccine_code rvc
+ON pi.vaccine_id=rvc.id
+WHERE cvx_code IN (207,208,211,212,213,217,221,229,230,300,301,302,520) AND shot_administered_date >'11-SEP-2023' AND pi.is_historical=0 AND pi.is_shot_valid=1
+GROUP BY shot_data_entered_org_id
+)out_of_commission_covid_total ON out_of_commission_covid_total.shot_data_entered_org_id=p.provider_id
+
+;
+-----------------------------------------------
