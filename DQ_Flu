@@ -1,0 +1,149 @@
+
+
+
+WbVarDef fName = 'C:\Users\dchung\Desktop\Work\DQ\2024\031824\031824_FLU_test3.xlsx'; 
+WbExport -type=xlsx
+				 -file='$[fName]'
+				 -title='FLU'
+         -delimiter=','
+         -dateFormat='yyyy-MM-dd';
+
+
+
+
+Select p.ASSIGNEE, p.PROVIDER_PIN, p.provider_name, p.prac_type, p.family, 
+INFLUENZA_REPORTED_GUI, -- time frame DC
+INFLUENZA_REPORTED_HL7, -- time frame DC
+INFLUENZA_REPORTED_ROSTER, --time frame DC
+INFLUENZA_REPORTED_ROSTER_HISTORICAL,--leave alone DC
+INFLUENZA_UNSPECIFIED, --leave alone DC
+INFLUENZA_COUNT_SAME_PAT_SAME_DAY, 
+INFLUENZA_count_less_24_8_days, INFLUENZA_count_more_24_8_days, round((INFLUENZA_count_more_24_8_days/(nullif((INFLUENZA_count_more_24_8_days+INFLUENZA_count_less_24_8_days),0)))*100,2) as INFLUENZA_Pct_Slow,
+FLU_UNDER_6MONTHS,
+TWO_OR_MORE_FLU_SHOTS_OVER_9YEARS_OLD,
+INACTIVE_FLU_CVX_CODES_8_days,
+INACTIVE_FLU_CVX_CODES_TOTAL
+
+FROM (select ext.assignee as ASSIGNEE, uuid as PROVIDER_ID, provider_name, vacman_pin PROVIDER_PIN, 
+(Select description from ref_code where id = provider_practice_type_id) AS prac_type, 
+ ext.ext_group as family from provider p 
+ left join External_Groups ext on p.uuid = ext.provider_id
+ WHERE provider_status_type_id='2101'
+--try running without where clause to include non INFLUENZA vaccines and compare ---
+
+--where uuid in (select SHOT_DATA_ENTERED_ORG_ID from patient_immunization where vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('207','208','212','213','217','218','219','228','229','300')) and SHOT_ADMINISTERED_DATE > '13-DEC-2020')
+)p
+
+left join (
+			select SHOT_DATA_ENTERED_ORG_ID,
+            NVL(COUNT(case when pi.DATA_SOURCE_TYPE_ID = 3901 then 1 end),0) as INFLUENZA_REPORTED_GUI ,
+            NVL(COUNT(case when pi.DATA_SOURCE_TYPE_ID = 3902 then 1 end),0) as INFLUENZA_REPORTED_HL7,   
+            NVL(COUNT(case when pi.DATA_SOURCE_TYPE_ID = 3907 then 1 end),0) as INFLUENZA_REPORTED_ROSTER,
+            
+            NVL(COUNT(case when vaccine_id IN (Select id from ref_vaccine_code where cvx_code IN ('128','88','151','194')) and is_historical = 0 then 1 end),0) as INFLUENZA_UNSPECIFIED,
+           
+            NVL(COUNT( case when round((pi.shot_reported_date - pi.shot_administered_date),2) <= 2.00 and pi.is_historical = 0 and pi.shot_administered_date >= (trunc(sysdate-8)) then 1 end),0) as INFLUENZA_count_less_24_8_days,
+            NVL(COUNT(case when round((pi.shot_reported_date - pi.shot_administered_date),2) > 2.00 and pi.is_historical = 0 and pi.shot_administered_date >= (trunc(sysdate-8)) then 1 end),0) as INFLUENZA_count_more_24_8_days,
+            NVL(COUNT(case when round((pi.shot_reported_date - pi.shot_administered_date),2) > 4.00 and pi.is_historical = 0 and pi.shot_administered_date >= (trunc(sysdate-8)) then 1 end),0) as INFLUENZA_count_more_72_8_days,
+            
+            NVL(COUNT(case when pi.DATA_SOURCE_TYPE_ID = 3907 and pi.is_historical = 1 then 1 end),0) as INFLUENZA_REPORTED_ROSTER_HISTORICAL,
+            NVL(COUNT(case when (select count(*) from patient_immunization pii where pii.uuid <> pi.uuid and pii.patient_uuid = pi.patient_uuid and pi.SHOT_ADMINISTERED_DATE = pii.SHOT_ADMINISTERED_DATE and vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('111','135','140','141','144','149','15','150','151','153','155','158','16','161','166','168','171','185','186','194','197','200','201','202','205','231','88'))) > 1 then 1 end),0) as INFLUENZA_COUNT_SAME_PAT_SAME_DAY
+            
+            from patient_immunization pi
+            join patient p on p.uuid = pi.patient_uuid
+            where vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('111','135','140','141','144','149','15','150','151','153','155','158','16','161','166','168','171','185','186','194','197','200','201','202','205','231','88')) and SHOT_ADMINISTERED_DATE >= '01-JUL-2023' AND is_shot_valid=1
+            group by SHOT_DATA_ENTERED_ORG_ID
+            
+            )influenza_reported on influenza_reported.SHOT_DATA_ENTERED_ORG_ID = p.PROVIDER_ID
+--
+
+--
+ --flu under 6months
+            
+            left join(
+            SELECT shot_data_entered_org_id,count(*) AS FLU_UNDER_6MONTHS
+            FROM patient_immunization pi
+            JOIN patient p
+            ON p.uuid=pi.patient_uuid
+            JOIN provider pr 
+            ON pi.shot_data_entered_org_id=pr.uuid
+            JOIN ref_vaccine_code rvc 
+            ON pi.vaccine_id=rvc.id
+            JOIN ref_vaccine_group_map rvgm
+            ON rvc.id=rvgm.vaccine_id
+            JOIN ref_vaccine_group_code rvgc
+            ON rvgm.vaccine_group_id=rvgc.id
+            WHERE rvgc.id='1022' AND shot_administered_date>'01-JUL-2023' AND shot_administered_age<6 AND is_shot_valid=1
+            group by shot_data_entered_org_id
+            )influenza_under_six ON influenza_under_six.shot_data_entered_org_id=p.provider_id
+            
+         
+--flu 2 or more over 9years old    
+LEFT JOIN(        
+with flu_count AS(
+SELECT shot_data_entered_org_id,patient_id,count(*)
+FROM patient_immunization pi
+JOIN patient p
+ON p.uuid=pi.patient_uuid
+JOIN provider pr 
+ON pi.shot_data_entered_org_id=pr.uuid
+JOIN ref_vaccine_code rvc 
+ON pi.vaccine_id=rvc.id
+JOIN ref_vaccine_group_map rvgm
+ON rvc.id=rvgm.vaccine_id
+JOIN ref_vaccine_group_code rvgc
+ON rvgm.vaccine_group_id=rvgc.id
+WHERE rvgc.id='1022' AND shot_administered_date>'01-JUL-2023' AND shot_administered_age>108 AND is_shot_valid=1
+HAVING COUNT(shot_administered_date)>1
+group by shot_data_entered_org_id,patient_id
+) 
+SELECT shot_data_entered_org_id,count(*) AS TWO_OR_MORE_FLU_SHOTS_OVER_9YEARS_OLD
+FROM flu_count
+GROUP BY shot_data_entered_org_id
+)influenza_two ON influenza_two.shot_data_entered_org_id=p.provider_id
+
+--inactive flu cxv
+left join (SELECT shot_data_entered_org_id, count(*) AS INACTIVE_FLU_CVX_CODES_8_days
+FROM patient p
+JOIN patient_immunization pi
+ON p.uuid=pi.patient_uuid
+JOIN provider pr
+ON pi.shot_data_entered_org_id=pr.uuid
+JOIN ref_vaccine_code rvc
+ON pi.vaccine_id=rvc.id
+WHERE cvx_code IN ('111','140','144','15','151','153','16','166','194','88') AND shot_administered_date between trunc(sysdate-8) AND trunc(sysdate) AND pi.is_historical=0 AND pi.is_shot_valid=1
+GROUP BY shot_data_entered_org_id
+)out_of_commission_flu ON out_of_commission_flu.shot_data_entered_org_id=p.provider_id
+
+--flu out of commission cumulative
+left join (SELECT shot_data_entered_org_id, count(*) AS INACTIVE_FLU_CVX_CODES_TOTAL
+FROM patient p
+JOIN patient_immunization pi
+ON p.uuid=pi.patient_uuid
+JOIN provider pr
+ON pi.shot_data_entered_org_id=pr.uuid
+JOIN ref_vaccine_code rvc
+ON pi.vaccine_id=rvc.id
+WHERE cvx_code IN ('111','140','144','15','151','153','16','166','194','88') AND shot_administered_date >'01-JUL-2023' AND pi.is_historical=0 AND pi.is_shot_valid=1
+GROUP BY shot_data_entered_org_id
+)out_of_commission_flu_total ON out_of_commission_flu_total.shot_data_entered_org_id=p.provider_id 
+--to find patient id for 2 or more flu shots over 9years old          
+/*
+
+SELECT vacman_pin,provider_name,patient_id,count(*)
+FROM patient_immunization pi
+JOIN patient p
+ON p.uuid=pi.patient_uuid
+JOIN provider pr 
+ON pi.shot_data_entered_org_id=pr.uuid
+JOIN ref_vaccine_code rvc 
+ON pi.vaccine_id=rvc.id
+JOIN ref_vaccine_group_map rvgm
+ON rvc.id=rvgm.vaccine_id
+JOIN ref_vaccine_group_code rvgc
+ON rvgm.vaccine_group_id=rvgc.id
+WHERE rvgc.id='1022' AND shot_administered_date>'01-JUL-2023' AND shot_administered_age>108 AND is_shot_valid=1 AND vacman_pin='40078'
+HAVING COUNT(shot_administered_date)>1
+group by vacman_pin,provider_name,patient_id
+
+*/
