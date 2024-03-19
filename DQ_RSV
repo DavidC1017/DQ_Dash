@@ -1,0 +1,58 @@
+
+
+
+WbVarDef fName = 'C:\Users\dchung\Desktop\Work\DQ\2024\031824\031824.xlsx'; 
+WbExport -type=xlsx
+				 -file='$[fName]'
+				 -title='RSV'
+         -delimiter=','
+         -dateFormat='yyyy-MM-dd';
+
+
+
+
+Select p.ASSIGNEE, p.PROVIDER_PIN, p.provider_name, p.prac_type, p.family, 
+RSV_REPORTED_GUI, -- time frame DC
+RSV_REPORTED_HL7, -- time frame DC
+RSV_REPORTED_ROSTER, --time frame DC
+RSV_REPORTED_ROSTER_HISTORICAL--leave alone DC
+RSV_UNSPECIFIED, --leave alone DC
+RSV_COUNT_SAME_PAT_SAME_DAY, 
+RSV_count_less_24_8_days, RSV_count_more_24_8_days, 
+round((RSV_count_more_24_8_days/(nullif((RSV_count_more_24_8_days+RSV_count_less_24_8_days),0)))*100,2) as RSV_Pct_Slow,
+ RSV_CVX_93_TOTAL,
+  RSV_CVX_93_8_DAYS
+
+FROM (select ext.assignee as ASSIGNEE, uuid as PROVIDER_ID, provider_name, vacman_pin PROVIDER_PIN, 
+(Select description from ref_code where id = provider_practice_type_id) AS prac_type, 
+ ext.ext_group as family from provider p
+ left join External_Groups ext on p.uuid = ext.provider_id
+ WHERE provider_status_type_id='2101'
+--try running without where clause to include non RSV vaccines and compare ---
+
+--where uuid in (select SHOT_DATA_ENTERED_ORG_ID from patient_immunization where vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('207','208','212','213','217','218','219','228','229','300')) and SHOT_ADMINISTERED_DATE > '13-DEC-2020')
+)p
+
+left join (
+			select SHOT_DATA_ENTERED_ORG_ID,
+            NVL(COUNT(case when pi.DATA_SOURCE_TYPE_ID = 3901 then 1 end),0) as RSV_REPORTED_GUI,
+            NVL(COUNT(case when pi.DATA_SOURCE_TYPE_ID = 3902 then 1 end),0) as RSV_REPORTED_HL7,   
+            NVL(COUNT(case when pi.DATA_SOURCE_TYPE_ID = 3907 then 1 end),0) as RSV_REPORTED_ROSTER, 
+            NVL(COUNT(case when vaccine_id IN (Select id from ref_vaccine_code where CVX_CODE IN ('304','314','315')) and is_historical = 0 then 1 end),0) as RSV_UNSPECIFIED,
+            
+            NVL(COUNT( case when round((pi.shot_reported_date - pi.shot_administered_date),2) <= 2.00 and pi.is_historical = 0 and pi.shot_administered_date >= (trunc(sysdate-8)) then 1 end),0) as RSV_count_less_24_8_days,
+            NVL(COUNT(case when round((pi.shot_reported_date - pi.shot_administered_date),2) > 2.00 and pi.is_historical = 0 and pi.shot_administered_date >= (trunc(sysdate-8)) then 1 end),0) as RSV_count_more_24_8_days,
+            NVL(COUNT(case when round((pi.shot_reported_date - pi.shot_administered_date),2) > 4.00 and pi.is_historical = 0 and pi.shot_administered_date >= (trunc(sysdate-8)) then 1 end),0) as RSV_count_more_72_8_days,
+           
+            NVL(COUNT(case when pi.DATA_SOURCE_TYPE_ID = 3907 and pi.is_historical = 1 then 1 end),0) as RSV_REPORTED_ROSTER_HISTORICAL,
+            NVL(COUNT(case when (select count(*) from patient_immunization pii where pii.uuid <> pi.uuid and pii.patient_uuid = pi.patient_uuid and pi.SHOT_ADMINISTERED_DATE = pii.SHOT_ADMINISTERED_DATE and vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('93','303','304','305','306','314','315','307'))) > 1 then 1 end),0) as RSV_COUNT_SAME_PAT_SAME_DAY,
+          
+            NVL(COUNT(case when vaccine_id IN (Select id from ref_vaccine_code where CVX_CODE IN ('93')) and is_historical = 0 then 1 end),0) as RSV_CVX_93_TOTAL,
+            NVL(COUNT(case when vaccine_id IN (Select id from ref_vaccine_code where CVX_CODE IN ('93')) AND shot_administered_date between trunc(sysdate-8) AND trunc(sysdate) AND pi.is_historical=0 AND pi.is_shot_valid=1 then 1 end),0) as RSV_CVX_93_8_DAYS
+            
+			from patient_immunization pi
+            join patient p on p.uuid = pi.patient_uuid
+            where vaccine_id in (Select id from ref_vaccine_code where CVX_CODE IN ('93','303','304','305','306','315','314','307')) and SHOT_ADMINISTERED_DATE >= '01-JUL-2023'
+            group by SHOT_DATA_ENTERED_ORG_ID
+            
+            )RSV_reported on RSV_reported.SHOT_DATA_ENTERED_ORG_ID = p.PROVIDER_ID
